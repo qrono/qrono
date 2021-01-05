@@ -88,8 +88,8 @@
             <argument>-server</argument>
             <argument>-classpath</argument>
             <classpath/>
-            <argument>-Xms4g</argument>
-            <argument>-Xmx4g</argument>
+            <argument>-Xms6g</argument>
+            <argument>-Xmx6g</argument>
             <argument>-Dio.netty.buffer.checkAccessible=false</argument>
             <argument>-Dio.netty.buffer.checkBounds=false</argument>
             <argument>-Dqrono.data.root=${project.build.directory}/data</argument>

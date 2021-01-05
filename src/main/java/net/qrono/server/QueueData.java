@@ -3,6 +3,7 @@ package net.qrono.server;
 import static java.util.Objects.requireNonNull;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Preconditions;
 import com.google.common.base.Verify;
 import com.google.common.util.concurrent.AbstractIdleService;
 import com.google.errorprone.annotations.concurrent.GuardedBy;
@@ -157,6 +158,21 @@ public class QueueData extends AbstractIdleService {
     flushSchedule.cancel();
     currentSegment.close();
     immutableSegments.close();
+  }
+
+  /**
+   * Delete the queue from disk. May only be called after terminating.
+   */
+  public synchronized void delete() throws IOException {
+    Preconditions.checkState(state() == State.TERMINATED);
+
+    try (var children = Files.newDirectoryStream(directory)) {
+      for (Path child : children) {
+        Files.delete(child);
+      }
+    }
+
+    Files.delete(directory);
   }
 
   // Provide read-only access to "last" while suppressing Error Prone GuardedBy warnings.

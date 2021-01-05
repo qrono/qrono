@@ -6,12 +6,14 @@ import com.google.common.base.Preconditions;
 import com.google.common.base.Throwables;
 import com.google.common.util.concurrent.AbstractIdleService;
 import com.google.protobuf.ByteString;
+import com.lmax.disruptor.BlockingWaitStrategy;
 import com.lmax.disruptor.EventHandler;
 import com.lmax.disruptor.EventTranslatorOneArg;
 import com.lmax.disruptor.EventTranslatorThreeArg;
 import com.lmax.disruptor.EventTranslatorTwoArg;
 import com.lmax.disruptor.RingBuffer;
 import com.lmax.disruptor.dsl.Disruptor;
+import com.lmax.disruptor.dsl.ProducerType;
 import com.lmax.disruptor.util.DaemonThreadFactory;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
@@ -80,7 +82,7 @@ public class Queue extends AbstractIdleService {
         entriesSizeBytes = 0;
       }
     }
-  };
+  }
 
   private final Disruptor<OpHolder> disruptor;
   private final RingBuffer<OpHolder> opBuffer;
@@ -98,23 +100,41 @@ public class Queue extends AbstractIdleService {
     this.clock = clock;
     this.workingSet = workingSet;
 
-    disruptor = new Disruptor<>(OpHolder::new, 1024, DaemonThreadFactory.INSTANCE);
+    disruptor = new Disruptor<>(
+        OpHolder::new,
+        1024,
+        DaemonThreadFactory.INSTANCE,
+        ProducerType.SINGLE,
+        new BlockingWaitStrategy());
     disruptor.handleEventsWith(new BatchEventHandler());
     opBuffer = disruptor.getRingBuffer();
   }
 
   @Override
   protected void startUp() {
-    data.awaitRunning();
+    data.startAsync().awaitRunning();
     disruptor.start();
   }
 
   @Override
-  protected void shutDown() {
+  protected void shutDown() throws IOException {
     disruptor.shutdown();
+    data.stopAsync().awaitTerminated();
   }
 
-  public CompletableFuture<Item> enqueueAsync(ByteString value, @Nullable Timestamp deadline) {
+  public synchronized void delete() throws IOException {
+    Preconditions.checkState(state() == State.TERMINATED);
+
+    // Remove all entries from the working set
+    for (Long id : dequeuedIds) {
+      workingSet.get(id).release();
+    }
+
+    data.delete();
+  }
+
+  public synchronized CompletableFuture<Item> enqueueAsync(ByteString value,
+      @Nullable Timestamp deadline) {
     Preconditions.checkState(isRunning());
     var result = new CompletableFuture<Entry>();
     opBuffer.publishEvent(enqueueTranslator, result, value, deadline);
@@ -130,7 +150,7 @@ public class Queue extends AbstractIdleService {
     }
   }
 
-  public CompletableFuture<Item> dequeueAsync() {
+  public synchronized CompletableFuture<Item> dequeueAsync() {
     Preconditions.checkState(isRunning());
     var result = new CompletableFuture<Item>();
     opBuffer.publishEvent(dequeueTranslator, result);
@@ -146,7 +166,7 @@ public class Queue extends AbstractIdleService {
     }
   }
 
-  public CompletableFuture<Void> releaseAsync(long id) {
+  public synchronized CompletableFuture<Void> releaseAsync(long id) {
     Preconditions.checkState(isRunning());
     var result = new CompletableFuture<Entry>();
     opBuffer.publishEvent(releaseTranslator, result, id);
@@ -165,7 +185,8 @@ public class Queue extends AbstractIdleService {
     }
   }
 
-  public CompletableFuture<Timestamp> requeueAsync(long id, @Nullable Timestamp deadline) {
+  public synchronized CompletableFuture<Timestamp> requeueAsync(long id,
+      @Nullable Timestamp deadline) {
     Preconditions.checkState(isRunning());
     var result = new CompletableFuture<Entry>();
     opBuffer.publishEvent(requeueTranslator, result, id, deadline);
@@ -181,7 +202,7 @@ public class Queue extends AbstractIdleService {
     }
   }
 
-  public CompletableFuture<Item> peekAsync() {
+  public synchronized CompletableFuture<Item> peekAsync() {
     Preconditions.checkState(isRunning());
     var result = new CompletableFuture<Item>();
     opBuffer.publishEvent(peekTranslator, result);
@@ -197,7 +218,7 @@ public class Queue extends AbstractIdleService {
     }
   }
 
-  public CompletableFuture<QueueInfo> getQueueInfoAsync() {
+  public synchronized CompletableFuture<QueueInfo> getQueueInfoAsync() {
     Preconditions.checkState(isRunning());
     var result = new CompletableFuture<QueueInfo>();
     opBuffer.publishEvent(getQueueInfoTranslator, result);

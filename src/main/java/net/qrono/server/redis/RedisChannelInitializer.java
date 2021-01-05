@@ -24,11 +24,13 @@ import io.netty.handler.codec.redis.RedisEncoder;
 import io.netty.handler.codec.redis.RedisMessage;
 import io.netty.handler.codec.redis.SimpleStringRedisMessage;
 import io.netty.util.ReferenceCountUtil;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import net.qrono.server.QronoException;
 import net.qrono.server.QueueManager;
 import net.qrono.server.data.ImmutableTimestamp;
 import net.qrono.server.data.Timestamp;
@@ -300,6 +302,24 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
           new IntegerRedisMessage(info.dequeuedCount()))));
     }
 
+    // DEL(ETE) queue
+    //   OK
+    private CompletableFuture<RedisMessage> handleDelete(List<RedisMessage> args) {
+      if (args.size() != 2) {
+        throw RedisRequestException.wrongNumberOfArguments();
+      }
+
+      var queueName = arg(args, 1).toString(StandardCharsets.US_ASCII);
+      return CompletableFuture.supplyAsync(() -> {
+        try {
+          manager.deleteQueue(queueName);
+          return new SimpleStringRedisMessage("OK");
+        } catch (IOException e) {
+          throw new CompletionException(e);
+        }
+      });
+    }
+
     private CompletableFuture<RedisMessage> handlePing(List<RedisMessage> args) {
       switch (args.size()) {
         case 1:
@@ -343,6 +363,10 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
         case "stat":
           return handleStat(args);
 
+        case "del":
+        case "delete":
+          return handleDelete(args);
+
         // For compatibility with Redis
         case "ping":
           return handlePing(args);
@@ -365,6 +389,10 @@ public class RedisChannelInitializer extends ChannelInitializer<SocketChannel> {
           if (e.getCause() instanceof RedisRequestException) {
             var rre = (RedisRequestException) e.getCause();
             ctx.write(new ErrorRedisMessage(rre.getMessage()));
+            doFlush = true;
+          } else if (e.getCause() instanceof QronoException) {
+            var qe = (QronoException) e.getCause();
+            ctx.write(new ErrorRedisMessage(qe.getMessage()));
             doFlush = true;
           } else {
             log.error("Unhandled server error. Closing connection", e);
